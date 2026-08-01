@@ -1,0 +1,525 @@
+---
+title: "Exercise 9 SEVM - graded"
+date: "`r Sys.Date()`"
+author: "Vishal Mangukiya and Daniel Abanto"
+output:
+  html_document: default
+  pdf_document: default
+  rmdformats::readthedown:
+      rmdformats::readthedown:
+      self_contained: true
+      thumbnails: true
+      lightbox: true
+      gallery: false
+      highlight: tango
+---
+
+*Always fill the chunks following the instructions with your code. Do not forget to fill in your names and to submit on time at Moodle. If you need more chunks feel free to add. Do not forget to interpret the results.*
+
+**This exercise is graded.**
+
+*Specify the packages you need in the following chunk.*
+
+```{r setup, include=TRUE, message=FALSE}
+
+library(knitr)
+library(rmdformats)
+require(sf)
+require(spdep)
+require(sp)
+require(gridExtra)
+require(ncf)
+require(tmap)
+require(ggplot2)
+require(ggpubr)
+require(gstat) # for simulation of autocorrelated data
+require(dplyr)
+require(tripack)
+
+opts_knit$set(root.dir = 'C:/Users/visha/Downloads')
+
+```
+
+# Pre-processing
+
+*We will continue with using the brexit dataset.*
+
+*Load the data and assign the CRS.*
+
+```{r results='hide'}
+
+
+df_brexit <- st_read("brexit.shp")
+
+#assign crs
+df_brexit <- df_brexit %>% st_set_crs(27700)
+
+```
+
+*Use the spatial weight matrix (weighted list) from the previous exercise.*
+
+```{r}
+
+poSurf <- st_point_on_surface(df_brexit)
+
+polynb <- poly2nb(df_brexit)
+
+k1nb <- st_coordinates(poSurf) %>% 
+  knearneigh(k = 1) %>% 
+  knn2nb()
+
+unionedNb <- union.nb(k1nb, polynb)
+
+is.symmetric.nb(unionedNb)
+
+## it's not symmetric
+
+union_k1nbSym <- make.sym.nb(unionedNb)
+
+## now it is symmetric
+
+dlist2 <- nbdists(union_k1nbSym, st_coordinates(poSurf))
+dlist2 <- lapply(dlist2, function(x) 1/x)
+unionedListw_d2 <- nb2listw(union_k1nbSym, glist=dlist2, style = "W")
+
+```
+
+# Spatial eigenvector mapping
+
+*Perform a spatial eigenvector selection and add the selected eigenvectors to the GLM. Use the three predictors share of elderly, prop_65_ov, share of unqualified prop_no_qu and share of non Caucasian population prop_non_w. Do not forget the offset.*
+
+```{r}
+
+meQp <- spatialreg::ME(Leave ~ prop_65_ov + prop_no_qu + 
+                         prop_non_w,
+                       family = quasipoisson, 
+                       data = df_brexit, 
+                       offset = log(Valid_Vote), listw = unionedListw_d2)
+
+
+modelSevmQp <- glm(Leave ~ prop_65_ov + prop_no_qu + 
+                         prop_non_w + fitted(meQp),
+                   family = quasipoisson, 
+                   data = df_brexit, 
+                   offset = log(Valid_Vote))
+summary(modelSevmQp)
+
+1 - modelSevmQp$deviance / modelSevmQp$null.deviance
+
+```
+*The coefficients for prop_65_ov and prop_no_qu are positive, indicating a higher proportion of elderly and unqualified individuals is associated with higher Leave votes, while prop_non_w has a negative effect. Many of the fitted spatial eigenvectors (fitted(meQp)vec) are significant, suggesting that spatial autocorrelation plays a role in the voting pattern. The dispersion parameter is high, indicating overdispersion in the data, and the model has significantly reduced residual deviance compared to the null deviance.*
+
+*Is there a need to reduce complexity of the model? If yes, perform a model selection.*
+
+## Comparision with non-spatial GLM
+
+*Compare the two models with respect to the explained deviance and the selected coefficients.*
+
+```{r}
+
+#fit a glm
+
+modelGlm <- glm(
+  Leave ~ prop_65_ov + prop_no_qu + prop_non_w + offset(log(Valid_Vote)), 
+  data = df_brexit, 
+  family = quasipoisson
+)
+
+
+coef(modelGlm)
+
+
+coef(modelSevmQp)
+
+#explained deviance GLM model
+1 - modelGlm$deviance / modelGlm$null.deviance
+
+#explained deviance eigenvector
+1 - modelSevmQp$deviance / modelSevmQp$null.deviance
+
+
+
+```
+In the previous step, we generated a  normal GLM using the variables that we also selected for the GLM with spatial eigenvector mapping. We could have a look at the regression coefficients of each model to see if there is any difference. The size of the coefficients does not differ that much between the two models. There is only a significant difference when comparing the size of the proportion of non qualified persons variable.*
+
+The explain deviance for the normal GLM is 0.655, while the value for the GLM with spatial eigenvector mapping is 0.85. The explained deviance increased signficantly after adding the eigenvectors.*
+
+*How did the spatial autocorrelation of the residuals change?*
+
+Yes, the autocorrelation of the residuals did change. To compare the values, we can calculate the Global Moran I for regression residuals. The autocorrelation of the residuals is 0.48 for the normal GLM while for the GLM with spatial eigenvector mapping, the value is 0.12. We can still see some left over spatial autocorrelation, but when applying a GLM with spatial eigenvector mapping, we can reduce the amount of spatial autocorrelation significantly.*
+
+```{r}
+
+# Perform Moran's I test for spatial autocorrelation on the residuals of the SEVM model
+moranSevmQp <- lm.morantest(modelSevmQp, listw = unionedListw_d2)
+print(moranSevmQp)
+
+# Perform Moran's I test for spatial autocorrelation on the residuals of the GLM model
+moranGlmQp <- lm.morantest(modelGlm, listw = unionedListw_d2)
+print(moranGlmQp)
+
+
+```
+
+## Mapping of the selected eigenvectors
+
+*Create maps of the selected spatial eigenvectors.*
+
+
+```{r}
+sevQp <- fitted(meQp)
+
+df_brexit_svem <- st_sf(data.frame(df_brexit, sevQp))
+
+tm_shape(df_brexit_svem) + 
+  tm_polygons(col= colnames(sevQp), palette = "-RdBu", lwd=.5,   
+             n = 7, midpoint=0,  legend.show = FALSE) + 
+  tm_layout(main.title = "Selected spatial eigenvectors", legend.outside = TRUE,
+            attr.outside = TRUE, panel.show = TRUE, 
+            panel.labels = colnames(sevQp)) +
+  tm_scale_bar()
+
+```
+
+*Try to characterize the spatial eigenvector by describing general patterns. Are the eigenvectors representing short or long ranged autocorrelation, are there specific regions that contrast for some eigenvectors? It might not be necessary to describe each and every eigenvector in detail. Try to get the gist of it.*
+
+Spatial Variation and Autocorrelation
+The eigenvectors depicted in the maps demonstrate significant spatial variation across the regions of England. Each map represents a different eigenvector, showing unique spatial patterns. Some eigenvectors, such as vec16 and vec36, exhibit pronounced localized clusters of high or low values. These clusters suggest the presence of short-range spatial autocorrelation, where areas that are geographically close to each other display similar voting patterns. This pattern of short-range autocorrelation can often be attributed to localized socio-economic conditions or demographic similarities that influence voting behavior in a uniform manner within small geographic areas.*
+
+Conversely, other eigenvectors, such as vec42 and vec5, reveal broader, more dispersed patterns across the region. These eigenvectors capture long-range spatial autocorrelation, where spatial dependencies extend over larger distances. This type of autocorrelation suggests that the voting patterns in these areas are influenced by broader regional trends or factors that transcend local neighborhood effects. Long-range spatial autocorrelation may reflect the influence of regional economic conditions, cultural factors, or media influence that operate at a larger geographic scale.*
+
+Regional Contrasts in Spatial Eigenvectors
+The maps also highlight the presence of regional contrasts across different eigenvectors. For example, vec36 prominently features strong spatial contrasts in the northern parts of England, while eigenvectors like vec5 and vec42 highlight different regions in the central and northern areas. These contrasts indicate that different regions are subject to different spatial processes or influences, which are captured by different eigenvectors. The ability of spatial eigenvectors to reveal such regional contrasts is crucial for understanding the spatial dynamics at play within the data.*
+
+The contrasting regions identified by the eigenvectors may correspond to underlying socio-economic or demographic divides, such as differences in income, education, or ethnic composition, which are known to influence voting behavior. By analyzing these spatial patterns, researchers can gain insights into how regional differences contribute to overall voting outcomes, such as the Brexit referendum.*
+
+Interpretation of Red and Blue Shading
+The shading on the maps, with red and blue tones, likely represents positive and negative loadings on the spatial eigenvectors, respectively. These loadings indicate areas where the spatial patterns captured by each eigenvector are either positively or negatively pronounced. A strong positive loading (darker red shading) may indicate regions where certain spatial characteristics, such as high levels of support for Brexit, are particularly strong. Conversely, a strong negative loading (darker blue shading) may represent regions with weaker or opposite patterns.*
+
+The presence of both positive and negative loadings across different eigenvectors suggests that the spatial autocorrelation in the data is not uniform but varies across regions. This variation reflects the complex and multifaceted nature of the factors influencing voting behavior, with some regions displaying strong support for Brexit while others exhibit resistance.*
+
+
+
+
+### Combined effect of the spatial eigenvectors
+
+*What is the combined effect of the eigenvectors at the response scale? You can calculate the effect by multiplying the regression coefficients with the eigenvectors, then adding them up and then taking the anti-log. Alternatively (as done in the course book) you can first multiply the regression coefficients with the eigenvectors, then take the anti-log and then calculate the product of them. Create a map of the effect of the eigenvectors and interpret it.*
+
+```{r}
+# extract the coefficients, standard errors and p-values from the model
+theCoefficientDf <- summary(modelSevmQp)$coefficients %>% as.data.frame()
+idx <- which(substr(row.names(theCoefficientDf),1,6) == "fitted")
+# get the sign
+theSign <- sign(theCoefficientDf[idx,1])
+theCoef <- theCoefficientDf[idx,1]
+
+# column index of the spatial eigenvectors
+idx <- which(substr(names(df_brexit_svem),1,3) == "vec")
+
+sevNames <- names(df_brexit_svem)[idx]
+sevNamesSignCor <- NULL
+sevNamesEffect <- NULL
+i <- 1
+# get new version of the spatial eigenvector
+# that corrects for the different signs
+for(aName in sevNames)
+{
+  newName <- paste0("sign_corr", aName)
+  newNameEffect <- paste0("effect", aName)
+  # sign corrected
+  df_brexit_svem[, newName] <- st_drop_geometry(df_brexit_svem)[, aName]*theSign[i]
+  # the effect of the coefficient at response scale
+  df_brexit_svem[,newNameEffect] <- exp( st_drop_geometry(df_brexit_svem)[, aName]*theCoef[i] )
+
+  i <- i+1
+  sevNamesSignCor <- c(sevNamesSignCor, newName)
+  sevNamesEffect <- c(sevNamesEffect, newNameEffect)
+}
+#covidKreiseSvem[,sevNamesSignCor]
+```
+
+```{r}
+tm_shape(df_brexit_svem) + 
+  tm_polygons(col= sevNamesEffect, palette = "-RdBu", lwd=.5,   
+             n = 21, midpoint=1,  legend.show = TRUE, title="Effect at\nresponse scale") + 
+  tm_layout(main.title = "Selected spatial eigenvectors, effect", legend.outside = TRUE,
+            attr.outside = TRUE, panel.show = TRUE, 
+            panel.labels = colnames(sevQp), title.size = .7) +
+  tm_scale_bar()
+
+
+```
+
+```{r}
+df_brexit_svem$sevEffectResponseProd <- apply(st_drop_geometry(df_brexit_svem[, sevNamesEffect]), MARGIN= 1, FUN=prod)
+
+tm_shape(df_brexit_svem) + 
+  tm_polygons(col= "sevEffectResponseProd", palette = "-RdBu", lwd=.5,   
+             n = 7, midpoint=1,  legend.show = TRUE, title="Combined effect at\nresponse scale") + 
+  tm_layout(main.title = "Selected spatial eigenvectors", legend.outside = TRUE,
+            attr.outside = TRUE, panel.show = TRUE, 
+            title.size = .7) +
+  tm_scale_bar()
+
+```
+
+
+## Spatially varying regression coefficients
+
+*Test if there is indication for spatially varying regression coefficients for the share of the non qualified workers If so, create a map of the spatially varying regression coefficient as done in the course book.*
+
+```{r}
+
+modelSevmQpInt <- glm(Leave ~ prop_65_ov + 
+                     prop_non_w + prop_no_qu * (vec11 + vec13 + vec16 + vec27 + vec35 + vec5 + vec2 + vec12 + vec54 + vec41 + vec51 + vec34 + vec21 + vec15 + vec17 +
+                                                  vec8 + vec18 + vec36 + vec42 + vec80 + vec4),
+                   family = quasipoisson, 
+                   data = df_brexit_svem, 
+                   offset = log(Valid_Vote))
+drop1(modelSevmQpInt, test="F")
+
+modelSevmQpInt <- update(modelSevmQpInt, ~. -prop_no_qu:vec8)
+drop1(modelSevmQpInt, test="F")
+
+modelSevmQpInt <- update(modelSevmQpInt, ~. -prop_no_qu:vec36)
+drop1(modelSevmQpInt, test="F")
+
+modelSevmQpInt <- update(modelSevmQpInt, ~. -prop_no_qu:vec5)
+drop1(modelSevmQpInt, test="F")
+
+modelSevmQpInt <- update(modelSevmQpInt, ~. -prop_no_qu:vec13)
+drop1(modelSevmQpInt, test="F")
+
+modelSevmQpInt <- update(modelSevmQpInt, ~. -prop_no_qu:vec16)
+drop1(modelSevmQpInt, test="F")
+
+modelSevmQpInt <- update(modelSevmQpInt, ~. -prop_no_qu:vec34)
+drop1(modelSevmQpInt, test="F")
+
+modelSevmQpInt <- update(modelSevmQpInt, ~. -prop_no_qu:vec18)
+drop1(modelSevmQpInt, test="F")
+
+modelSevmQpInt <- update(modelSevmQpInt, ~. -prop_no_qu:vec12)
+drop1(modelSevmQpInt, test="F")
+
+modelSevmQpInt <- update(modelSevmQpInt, ~. -prop_no_qu:vec15)
+drop1(modelSevmQpInt, test="F")
+
+modelSevmQpInt <- update(modelSevmQpInt, ~. -prop_no_qu:vec51)
+drop1(modelSevmQpInt, test="F")
+
+modelSevmQpInt <- update(modelSevmQpInt, ~. -prop_no_qu:vec17)
+drop1(modelSevmQpInt, test="F")
+
+modelSevmQpInt <- update(modelSevmQpInt, ~. -prop_no_qu:vec42)
+drop1(modelSevmQpInt, test="F")
+
+modelSevmQpInt <- update(modelSevmQpInt, ~. -prop_no_qu:vec35)
+drop1(modelSevmQpInt, test="F")
+
+modelSevmQpInt <- update(modelSevmQpInt, ~. -prop_no_qu:vec4)
+drop1(modelSevmQpInt, test="F")
+
+modelSevmQpInt <- update(modelSevmQpInt, ~. -prop_no_qu:vec80)
+drop1(modelSevmQpInt, test="F")
+
+modelSevmQpInt <- update(modelSevmQpInt, ~. -prop_no_qu:vec41)
+drop1(modelSevmQpInt, test="F")
+
+modelSevmQpInt <- update(modelSevmQpInt, ~. -prop_no_qu:vec11)
+drop1(modelSevmQpInt, test="F")
+
+modelSevmQpInt <- update(modelSevmQpInt, ~. -prop_no_qu:vec21)
+drop1(modelSevmQpInt, test="F")
+
+modelSevmQpInt <- update(modelSevmQpInt, ~. -vec42)
+drop1(modelSevmQpInt, test="F")
+
+
+
+```
+
+```{r}
+
+m_prop_no_q_Vec27 <- df_brexit_svem %>%
+  mutate(vec27prop_no_q =  vec27 * prop_no_qu) %>%
+  tm_shape() + tm_polygons(col=c("vec27prop_no_q"),
+                           legend.hist = TRUE, palette="-RdBu", 
+                           style = "fisher", n = 6, midpoint = 0, 
+                           legend.reverse = TRUE, 
+                           title = "Share of people with no qualifications by eigenvector 27") +
+  tm_layout(legend.outside = TRUE, bg.color = "darkgrey", outer.bg.color = "lightgrey",
+            legend.outside.size = 0.5, attr.outside = TRUE,  legend.outside.position = "left",
+            main.title = "Share of people with no qualifications by sev 27") + 
+  tm_scale_bar()
+
+m_prop_no_q_Vec2 <- df_brexit_svem %>%
+  mutate(vec2prop_no_q =  vec2 * prop_no_qu) %>%
+  tm_shape() + tm_polygons(col=c("vec2prop_no_q"),
+                           legend.hist = TRUE, palette="-RdBu", 
+                           style = "fisher", n = 6, midpoint = 0, 
+                           legend.reverse = TRUE, 
+                           title = "Share of people with no qualifications by eigenvector 2") +
+  tm_layout(legend.outside = TRUE, bg.color = "darkgrey", outer.bg.color = "lightgrey",
+            legend.outside.size = 0.5, attr.outside = TRUE,  legend.outside.position = "left",
+            main.title = "Share of people with no qualifications by sev 2") + 
+  tm_scale_bar()
+
+m_prop_no_q_Vec54 <- df_brexit_svem %>%
+  mutate(vec54prop_no_q =  vec54 * prop_no_qu) %>%
+  tm_shape() + tm_polygons(col=c("vec54prop_no_q"),
+                           legend.hist = TRUE, palette="-RdBu", 
+                           style = "fisher", n = 6, midpoint = 0, 
+                           legend.reverse = TRUE, 
+                           title = "Share of people with no qualifications by eigenvector 54") +
+  tm_layout(legend.outside = TRUE, bg.color = "darkgrey", outer.bg.color = "lightgrey",
+            legend.outside.size = 0.5, attr.outside = TRUE,  legend.outside.position = "left",
+            main.title = "Share of people with no qualifications by sev 54") + 
+  tm_scale_bar()
+
+m_prop_no_q <- df_brexit_svem %>%
+  tm_shape() + tm_polygons(col=c("prop_no_qu"),
+                           legend.hist = TRUE,  
+                           style = "fisher", n = 6,  
+                           legend.reverse = TRUE, 
+                           title = "Share of people with no qualifications") +
+  tm_layout(legend.outside = TRUE, bg.color = "darkgrey", outer.bg.color = "lightgrey",
+            legend.outside.size = 0.5, attr.outside = TRUE,  legend.outside.position = "left",
+            main.title = "Share of people with no qualifications") + 
+  tm_scale_bar()
+
+tmap_arrange(m_prop_no_q_Vec27, m_prop_no_q_Vec2, m_prop_no_q_Vec54, m_prop_no_q,
+             ncol = 2, nrow=2)
+```
+
+
+*Did the regression coefficients for the 3 predictors in the model change compared to the SEVM model without the spatially varying regression coefficient?*
+
+```{r}
+
+coef(modelSevmQp)
+
+coef(modelSevmQpInt)
+
+```
+*The regression coefficients have barely changed their size. The biggest change has been regarding the prop_65_ov coefficient. The size for the SEVM model without the spatially varying regression was 0.611, while for the updated model, the size is 0.44. To assess further effects of the spatially varying regression coefficients on our model, we will have a look at the explained deviance and the residuals.*
+
+*Did the explainted deviance improve by adding the spatially varying regression coefficients?*
+
+```{r}
+#SEVM model without the spatially varying regression
+1 - modelSevmQp$deviance / modelSevmQp$null.deviance
+
+#SEVM model with the spatially varying regression
+1 - modelSevmQpInt$deviance / modelSevmQpInt$null.deviance
+
+
+```
+*As we can see above, the explained deviance just increased by 1.3% after adding the interaction.*
+
+*Plot the spatially varying regression coefficient.*
+
+```{r}
+df_brexit_svem <- df_brexit_svem %>% 
+  mutate(coef_no_qu = coef(modelSevmQpInt)["prop_no_qu"] + 
+           vec27*coef(modelSevmQpInt)["prop_no_qu:vec27"] + 
+           vec2*coef(modelSevmQpInt)["prop_no_qu:vec2"] + 
+           vec54*coef(modelSevmQpInt)["prop_no_qu:vec54"])
+
+# Summary of coef_no_qu to ensure it has a valid range
+summary(df_brexit_svem$coef_no_qu)
+
+
+
+# Plotting the map
+tm_shape(df_brexit_svem) + 
+  tm_polygons(col = "coef_no_qu",
+              title = "Regression coefficient",
+              palette = "-RdBu", midpoint= 0, n=6) +
+  tm_layout(legend.outside = TRUE, 
+            bg.color = "darkgrey", 
+            outer.bg.color = "lightgrey",
+            legend.outside.size = 0.5, 
+            attr.outside = TRUE,  
+            legend.outside.position = "right",
+            main.title = "Spatial varying regression coefficient for the non qualified workers") + 
+  tm_scale_bar()
+```
+
+*Describe the pattern.*
+
+*The map displays the spatially varying regression coefficient for the variable prop_no_qu (the proportion of people with no qualifications) obtained from model. This coefficient measures how the impact of prop_no_qu on the "Leave" vote share varies across different regions of England.*
+
+*The color gradient on the map highlights regional differences in this impact. Darker red areas indicate regions where the coefficient is higher, suggesting that in these locations, a greater proportion of people with no qualifications is associated with a stronger increase in the "Leave" vote share. In contrast, lighter shades represent areas with lower coefficients, where the effect of prop_no_qu on the "Leave" vote share is less pronounced.*
+
+*Overall, this spatial variation reveals that the influence of the proportion of people with no qualifications on the "Leave" vote is not uniform across England. Instead, it varies significantly by region, with some areas experiencing a stronger relationship between educational qualifications and voting behavior. This spatial pattern underscores the importance of considering local contexts when analyzing electoral outcomes and highlights regional disparities in the impact of educational attainment on voting preferences.*
+
+
+
+*Compare the residuals for the non spatial GLM, the SEVM model with and without the spatially varying coefficients. Do you see spatial pattern for the difference in residuals?*
+
+```{r}
+poSurf$residSevmQp <- residuals(modelSevmQp)
+poSurf$residSevmQpAbs <- abs(poSurf$residSevmQp)
+
+sevmqp <- tm_shape(df_brexit_svem) + 
+  tm_polygons(col="grey") +
+  tm_shape(poSurf) + 
+  tm_bubbles(size = "residSevmQpAbs", col= "residSevmQp", palette = "-RdBu", 
+             alpha=.9, perceptual=TRUE, scale=.8, border.alpha=.3, 
+             title.size = "Abs residual", title.col="Residuals", n=7,
+             midpoint = 0) + 
+  tm_layout(main.title = "Pearson residuals, SEVM QP", bg="darkgrey", 
+            legend.outside = TRUE, attr.outside = TRUE, legend.outside.size = 0.5) +
+  tm_scale_bar()
+
+
+
+
+poSurf$resid_mod_glm <- residuals(modelGlm)
+poSurf$resid_mod_glmAbs <- abs(poSurf$resid_mod_glm)
+
+glm_p <- tm_shape(df_brexit_svem) + 
+  tm_polygons(col="grey") +
+  tm_shape(poSurf) + 
+  tm_bubbles(size = "resid_mod_glmAbs", col= "resid_mod_glm", palette = "-RdBu", 
+             alpha=.9, perceptual=TRUE, scale=.8, border.alpha=.3, 
+             title.size = "Abs residual", title.col="Residuals", n=7,
+             midpoint = 0) + 
+  tm_layout(main.title = "Pearson residuals, Non Spatial GLM", bg="darkgrey", 
+            legend.outside = TRUE, attr.outside = TRUE, legend.outside.size = 0.5) +
+  tm_scale_bar()
+
+
+
+poSurf$residSevmQpInt <- residuals(modelSevmQpInt)
+poSurf$residSevmQpIntAbs <- abs(poSurf$residSevmQpInt)
+
+semv_int <- tm_shape(df_brexit_svem) + 
+  tm_polygons(col="grey") +
+  tm_shape(poSurf) + 
+  tm_bubbles(size = "residSevmQpIntAbs", col= "residSevmQpInt", palette = "-RdBu", 
+             alpha=.9, perceptual=TRUE, scale=.8, border.alpha=.3, 
+             title.size = "Abs residual", title.col="Residuals", n=7,
+             midpoint = 0) + 
+  tm_layout(main.title = "Pearson residuals, SEVM QP Int", bg="darkgrey", 
+            legend.outside = TRUE, attr.outside = TRUE, legend.outside.size = 0.5) +
+  tm_scale_bar()
+
+
+
+tmap_arrange(sevmqp, glm_p, semv_int, 
+             ncol = 2, nrow=2)
+
+```
+
+
+
+The SEVM model with spatially varying coefficients (SEVM QP) clearly stands out as the best performer, effectively minimizing residuals and eliminating spatial patterns. This indicates that it provides a superior fit for the data compared to the other models.
+
+Specifically, the non-spatial GLM (top right) displays evident spatial autocorrelation in its residuals, suggesting it fails to account for spatial dependencies. In contrast, the SEVM QP without spatially varying coefficients (bottom left) shows some improvement over the non-spatial GLM but still exhibits certain spatial patterns in the residuals. Overall, the SEVM QP with spatially varying coefficients (top left) excels in reducing residuals and addressing spatial patterns, demonstrating its effectiveness in fitting the data more accurately.
+
+
+
+
+
