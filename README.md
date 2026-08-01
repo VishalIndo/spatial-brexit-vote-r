@@ -54,15 +54,4 @@ This project analyzes spatial patterns in the Brexit "Leave" vote share across E
 ## ✅ Conclusion
 Adding spatial eigenvectors substantially improves model fit and removes most spatial autocorrelation in the residuals. Allowing the effect of "share unqualified" to vary spatially gives a small additional improvement and reveals regional differences in how education relates to the Leave vote.
 
-## 🗂 Repository structure
-```
-├── README.md
-├── analysis.Rmd        # full R Markdown analysis
-├── data/
-│   └── brexit.shp
-└── plots/
-    ├── eigenvectors_map.png
-    ├── combined_effect_map.png
-    ├── varying_coef_map.png
-    └── residuals_comparison.png
-```
+
