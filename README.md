@@ -2,17 +2,17 @@
 
 This project analyzes spatial patterns in the Brexit "Leave" vote share across England using **Spatial Eigenvector Mapping (SEVM)** in R.
 
-## 📁 Data
+## Data
 - `brexit.shp` (not included in this repo — see note below)
 - Predictors used: `prop_65_ov`, `prop_no_qu`, `prop_non_w`
 
 > **Note:** The Brexit shapefile is not included due to size/licensing.
 > Place your own copy in `data/brexit.shp` before running `analysis.Rmd`
 
-## 🧰 R Packages
+## R Packages
 `sf`, `spdep`, `sp`, `tmap`, `ggplot2`, `gstat`, `dplyr`, `spatialreg`, `tripack`
 
-## 🔍 Analysis Steps
+## Analysis Steps
 
 1. **Spatial weights matrix**  
    Built from a combination of polygon contiguity (`poly2nb`) and k-nearest-neighbor (`k=1`), symmetrized and inverse-distance weighted.
@@ -30,18 +30,18 @@ This project analyzes spatial patterns in the Brexit "Leave" vote share across E
 4. **Combined eigenvector effect**  
    Coefficients multiplied by eigenvectors and back-transformed to the response scale to show the joint spatial effect.
 
-   ![Combined effect at response scale](plots/combined_effect_map.wepb)
+   ![Combined effect at response scale](plots/combined_effect_map.webp)
 
 5. **Spatially varying coefficients**  
    Interaction of `prop_no_qu` with the eigenvectors tested via `drop1()`; a reduced model kept significant interactions (`vec27`, `vec2`, `vec54`).  
    → Explained deviance rose slightly to **85.8 %**.
 
-   ![Spatially varying regression coefficient](plots/varying_coef_map.wepb)
+   ![Spatially varying regression coefficient](plots/varying_coef_map.webp)
 
 6. **Residual comparison**  
    Pearson residuals mapped for all three models (GLM, SEVM, SEVM with varying coefficients).
 
-   ![Residual comparison](plots/residuals_comparison.wepb)
+   ![Residual comparison](plots/residuals_comparison.webp)
 
 ## 📊 Key Results
 
